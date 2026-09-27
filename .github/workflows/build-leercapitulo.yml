@@ -1,0 +1,33 @@
+name: Build LeerCapitulo extension
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix-leercapitulo-2026
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build extension
+        run: ./gradlew :src:es:leercapitulo:assembleRelease --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: leercapitulo-extension
+          path: src/es/leercapitulo/build/outputs/apk/release/*.apk
+          if-no-files-found: error
