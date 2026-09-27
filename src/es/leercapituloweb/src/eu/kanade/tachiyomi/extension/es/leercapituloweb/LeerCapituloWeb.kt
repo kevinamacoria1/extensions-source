@@ -98,6 +98,11 @@ abstract class LeerCapituloWeb : HttpSource() {
         }
     }
 
+    override fun imageUrlParse(response: Response): String = response.asJsoup()
+        .selectFirst(".comic_wraCon img, img")
+        ?.imgAttr()
+        .orEmpty()
+
     override fun pageListParse(response: Response): List<Page> {
         val chapterUrl = response.request.url.toString()
         val call = network.client.newCall(response.request)
