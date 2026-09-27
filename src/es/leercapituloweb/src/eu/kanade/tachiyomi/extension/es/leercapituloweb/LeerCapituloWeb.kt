@@ -15,6 +15,7 @@ import keiyoushi.utils.runWebViewBlocking
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -27,13 +28,18 @@ abstract class LeerCapituloWeb : HttpSource() {
 
     override fun popularMangaParse(response: Response): MangasPage {
         val document = response.asJsoup()
-        val mangas = document.select(".hot-manga > .thumbnails > a").map { element ->
+        val mangas = document.select("a[href*='/manga/']").mapNotNull { element ->
+            val url = element.attr("abs:href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val title = element.attr("title").ifBlank { element.text() }.trim()
+            if (title.isBlank()) return@mapNotNull null
+
             SManga.create().apply {
-                setUrlWithoutDomain(element.attr("abs:href"))
-                title = element.attr("title")
+                setUrlWithoutDomain(url)
+                this.title = title
                 thumbnail_url = element.selectFirst("img")?.imgAttr()
             }
-        }
+        }.distinctBy { it.url }
+
         return MangasPage(mangas, false)
     }
 
@@ -46,25 +52,78 @@ abstract class LeerCapituloWeb : HttpSource() {
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
+        val direct = parseSearchResponse(response)
+        if (direct.isNotEmpty()) return MangasPage(direct, false)
 
-        // The current site can return the manga page directly when the API is unavailable.
-        if (response.request.url.pathSegments.contains("manga")) {
-            val manga = mangaDetailsParse(response)
-            return MangasPage(listOf(manga), false)
+        val request = response.request
+        val call = network.client.newCall(request)
+
+        val html = runCatching {
+            runWebViewBlocking<String>(call, timeout = 30.seconds) {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                onPageFinished {
+                    evaluateJs("document.documentElement.outerHTML") { pageHtml ->
+                        resolve(pageHtml)
+                    }
+                }
+                loadUrl(request.url.toString())
+            }
+        }.getOrNull()
+
+        if (!html.isNullOrBlank()) {
+            val document = Jsoup.parse(html, request.url.toString())
+            val fromHtml = parseSearchDocument(document)
+            if (fromHtml.isNotEmpty()) return MangasPage(fromHtml, false)
+
+            val bodyText = document.body()?.text().orEmpty()
+            val fromJson = runCatching {
+                kotlinx.serialization.json.Json.decodeFromString<List<Dto>>(bodyText)
+            }.getOrDefault(emptyList()).map { dto ->
+                SManga.create().apply {
+                    setUrlWithoutDomain(dto.link)
+                    title = dto.label
+                    thumbnail_url = dto.thumbnail.takeIf { it.isNotBlank() }?.let {
+                        if (it.startsWith("http")) it else baseUrl + it
+                    }
+                }
+            }
+            if (fromJson.isNotEmpty()) return MangasPage(fromJson, false)
         }
 
-        val mangas = runCatching {
+        return MangasPage(emptyList(), false)
+    }
+
+    private fun parseSearchResponse(response: Response): List<SManga> {
+        val document = response.asJsoup()
+        val fromHtml = parseSearchDocument(document)
+        if (fromHtml.isNotEmpty()) return fromHtml
+
+        return runCatching {
             response.parseAs<List<Dto>>().map { dto ->
                 SManga.create().apply {
                     setUrlWithoutDomain(dto.link)
                     title = dto.label
-                    thumbnail_url = baseUrl + dto.thumbnail
+                    thumbnail_url = dto.thumbnail.takeIf { it.isNotBlank() }?.let {
+                        if (it.startsWith("http")) it else baseUrl + it
+                    }
                 }
             }
         }.getOrDefault(emptyList())
+    }
 
-        return MangasPage(mangas, false)
+    private fun parseSearchDocument(document: org.jsoup.nodes.Document): List<SManga> {
+        return document.select("a[href*='/manga/']").mapNotNull { element ->
+            val url = element.attr("abs:href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val title = element.attr("title").ifBlank { element.text() }.trim()
+            if (title.isBlank()) return@mapNotNull null
+
+            SManga.create().apply {
+                setUrlWithoutDomain(url)
+                this.title = title
+                thumbnail_url = element.selectFirst("img")?.imgAttr()
+            }
+        }.distinctBy { it.url }
     }
 
     override fun getFilterList(): FilterList = FilterList(
@@ -80,22 +139,23 @@ abstract class LeerCapituloWeb : HttpSource() {
         return SManga.create().apply {
             title = document.selectFirst("h1")?.text().orEmpty()
             description = document.selectFirst("#example2")?.text()
-            genre = document.select(".description-update a[href^='/genre/']").joinToString { it.text() }
-            thumbnail_url = document.selectFirst(".cover-detail > img")?.imgAttr()
+            genre = document.select("a[href*='/genre/']").joinToString { it.text() }
+            thumbnail_url = document.selectFirst("img[alt*='Portada'], .cover-detail img, img")?.imgAttr()
             status = SManga.UNKNOWN
         }
     }
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
-        return document.select(".chapter-list > ul > li").mapNotNull { element ->
-            element.selectFirst("a.xanh")?.let { link ->
-                SChapter.create().apply {
-                    setUrlWithoutDomain(link.attr("abs:href"))
-                    name = link.text()
-                }
+        return document.select("a[href*='/leer/']").mapNotNull { link ->
+            val href = link.attr("abs:href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val name = link.text().trim().takeIf { it.isNotBlank() } ?: return@mapNotNull null
+
+            SChapter.create().apply {
+                setUrlWithoutDomain(href)
+                this.name = name
             }
-        }
+        }.distinctBy { it.url }
     }
 
     override fun imageUrlParse(response: Response): String = response.asJsoup()
@@ -110,22 +170,16 @@ abstract class LeerCapituloWeb : HttpSource() {
         val html = runWebViewBlocking<String>(call, timeout = 60.seconds) {
             javaScriptEnabled = true
             domStorageEnabled = true
-
             var reloaded = false
 
             onPageFinished {
                 if (!reloaded) {
                     reloaded = true
-                    evaluateJs(
-                        "localStorage.setItem('display_mode','1'); location.reload();",
-                    )
+                    evaluateJs("localStorage.setItem('display_mode','1'); location.reload();")
                 } else {
                     poll(500.milliseconds) {
-                        evaluateJs(
-                            "document.querySelectorAll('.comic_wraCon img').length.toString()",
-                        ) { count ->
-                            val n = count.toIntOrNull() ?: 0
-                            if (n > 0) {
+                        evaluateJs("document.querySelectorAll('.comic_wraCon img').length.toString()") { count ->
+                            if ((count.toIntOrNull() ?: 0) > 0) {
                                 evaluateJs("document.documentElement.outerHTML") { pageHtml ->
                                     resolve(pageHtml)
                                 }
@@ -134,17 +188,16 @@ abstract class LeerCapituloWeb : HttpSource() {
                     }
                 }
             }
-
             loadUrl(chapterUrl)
         }
 
-        val document = org.jsoup.Jsoup.parse(html, chapterUrl)
-        val images = document.select(".comic_wraCon img").mapNotNull { image ->
+        val document = Jsoup.parse(html, chapterUrl)
+        val images = document.select(".comic_wraCon img, img").mapNotNull { image ->
             when {
                 image.hasAttr("data-original") -> image.attr("abs:data-original")
                 image.hasAttr("data-src") -> image.attr("abs:data-src")
                 else -> image.attr("abs:src")
-            }.takeIf { it.isNotBlank() }
+            }.takeIf { it.isNotBlank() && !it.startsWith("data:") }
         }.distinct()
 
         return images.mapIndexed { index, url -> Page(index, imageUrl = url) }
