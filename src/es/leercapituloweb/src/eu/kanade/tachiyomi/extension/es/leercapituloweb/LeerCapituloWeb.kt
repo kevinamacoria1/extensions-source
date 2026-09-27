@@ -18,7 +18,6 @@ import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Element
 import java.nio.charset.Charset
-import kotlin.time.Duration.Companion.seconds
 
 @Source
 abstract class LeerCapituloWeb : HttpSource() {
@@ -34,8 +33,10 @@ abstract class LeerCapituloWeb : HttpSource() {
         val mangas = document.select(".hot-manga > .thumbnails > a, .mainpage-manga").mapNotNull { element ->
             val link = element.selectFirst("a[href*='/manga/']") ?: element.takeIf { it.tagName() == "a" && it.attr("href").contains("/manga/") }
             val url = link?.attr("abs:href")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            val title = (link?.attr("title").orEmpty().ifBlank { element.selectFirst("h4, .media-body a")?.text().orEmpty() }
-                .ifBlank { link?.text().orEmpty() }).trim()
+            val title = (
+                link?.attr("title").orEmpty().ifBlank { element.selectFirst("h4, .media-body a")?.text().orEmpty() }
+                    .ifBlank { link?.text().orEmpty() }
+                ).trim()
             if (title.isBlank()) return@mapNotNull null
 
             SManga.create().apply {
@@ -194,8 +195,7 @@ abstract class LeerCapituloWeb : HttpSource() {
         return urlList.mapIndexed { i, imageUrl -> Page(i, imageUrl = imageUrl) }
     }
 
-    override fun imageUrlParse(response: Response): String =
-        response.asJsoup().selectFirst(".comic_wraCon img, img")?.imgAttr().orEmpty()
+    override fun imageUrlParse(response: Response): String = response.asJsoup().selectFirst(".comic_wraCon img, img")?.imgAttr().orEmpty()
 
     private fun Element.imgAttr(): String = when {
         hasAttr("data-lazy-src") -> attr("abs:data-lazy-src")
