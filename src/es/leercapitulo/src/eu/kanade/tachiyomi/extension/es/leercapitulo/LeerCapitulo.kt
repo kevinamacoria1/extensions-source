@@ -101,6 +101,16 @@ abstract class LeerCapitulo : HttpSource() {
         }
 
         val document = response.asJsoup()
+
+        // Direct manga URL fallback used when the site's search API is unavailable.
+        if (response.request.url.pathSegments.contains("manga")) {
+            val manga = runCatching { mangaDetailsParse(response) }.getOrNull()
+            return MangasPage(
+                manga?.let { listOf(it.apply { setUrlWithoutDomain(response.request.url.encodedPath) }) } ?: emptyList(),
+                hasNextPage = false,
+            )
+        }
+
         val mangas = document.select("div.cate-manga div.mainpage-manga").map { element ->
             SManga.create().apply {
                 setUrlWithoutDomain(element.selectFirst("div.media-body a")!!.attr("abs:href"))
