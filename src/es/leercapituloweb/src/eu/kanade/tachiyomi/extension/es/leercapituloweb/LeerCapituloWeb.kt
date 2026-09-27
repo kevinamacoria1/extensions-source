@@ -16,6 +16,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Element
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 @Source
 abstract class LeerCapituloWeb : HttpSource() {
@@ -100,7 +102,7 @@ abstract class LeerCapituloWeb : HttpSource() {
         val chapterUrl = response.request.url.toString()
         val call = network.client.newCall(response.request)
 
-        val html = runWebViewBlocking<String>(call, timeout = 60_000) {
+        val html = runWebViewBlocking<String>(call, timeout = 60.seconds) {
             javaScriptEnabled = true
             domStorageEnabled = true
 
@@ -113,7 +115,7 @@ abstract class LeerCapituloWeb : HttpSource() {
                         "localStorage.setItem('display_mode','1'); location.reload();",
                     )
                 } else {
-                    poll(500) {
+                    poll(500.milliseconds) {
                         evaluateJs(
                             "document.querySelectorAll('.comic_wraCon img').length.toString()",
                         ) { count ->
