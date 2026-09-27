@@ -73,7 +73,7 @@ abstract class LeerCapitulo : HttpSource() {
             urlBuilder.addPathSegment(it.toUriPart())
         }
 
-        urlBuilder.addPathSegment("") // Empty path segment to avoid 404
+        urlBuilder.addPathSegment("")
         urlBuilder.addQueryParameter("page", page.toString())
 
         val url = urlBuilder.build()
@@ -170,7 +170,24 @@ abstract class LeerCapitulo : HttpSource() {
 
         val useReversedString = orderList?.any { it == "01" } == true
 
-        val arrayData = document.selectFirst("#array_data")!!.text()
+        val arrayDataElement = document.selectFirst("#array_data")
+        if (arrayDataElement == null) {
+            val directImages = document.select(
+                ".reading-content img, .chapter-content img, #reader img, .reader img, .page-break img",
+            ).mapNotNull { image ->
+                image.imgAttr().takeIf { it.isNotBlank() }
+            }.distinct()
+
+            if (directImages.isNotEmpty()) {
+                return directImages.mapIndexed { i, imageUrl ->
+                    Page(i, imageUrl = imageUrl)
+                }
+            }
+
+            throw Exception("No se encontraron los datos de las páginas del capítulo.")
+        }
+
+        val arrayData = arrayDataElement.text()
 
         val scripts = document.select("head > script[src^=/assets/][src*=.js]")
             .map { it.attr("abs:src") }
@@ -197,17 +214,22 @@ abstract class LeerCapitulo : HttpSource() {
 
         if (dataScript == null) throw Exception("Unable to find the script")
 
-        val (key1, key2) = KEY_REGEX.findAll(dataScript).map { it.groupValues[1] }.toList()
+        val keys = KEY_REGEX.findAll(dataScript).map { it.groupValues[1] }.toList()
+        if (keys.size < 2) throw Exception("Unable to find the page decoding keys")
+
+        val key1 = keys[0]
+        val key2 = keys[1]
 
         val encodedUrls = arrayData.replace(DECODE_REGEX) {
             val index = key2.indexOf(it.value)
-            key1[index].toString()
+            if (index >= 0) key1[index].toString() else it.value
         }
 
         val urlList = String(Base64.decode(encodedUrls, Base64.DEFAULT), Charset.forName("UTF-8")).split(",")
 
-        val sortedUrls = orderList?.map {
-            if (useReversedString) urlList[it.reversed().toInt()] else urlList[it.toInt()]
+        val sortedUrls = orderList?.mapNotNull {
+            val index = it.reversed().toIntOrNull() ?: return@mapNotNull null
+            urlList.getOrNull(index)
         }?.reversed() ?: urlList
 
         return sortedUrls.mapIndexed { i, imageUrl ->
