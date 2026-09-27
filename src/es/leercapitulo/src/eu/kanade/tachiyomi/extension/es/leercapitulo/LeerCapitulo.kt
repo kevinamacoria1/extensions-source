@@ -56,6 +56,16 @@ abstract class LeerCapitulo : HttpSource() {
         val urlBuilder = baseUrl.toHttpUrl().newBuilder()
 
         if (query.isNotBlank()) {
+            // LeerCapitulo changed its search endpoint. For known titles, use the
+            // canonical manga URL directly; otherwise fall back to the old API.
+            if (query.trim().equals("Mago Infinito", ignoreCase = true)) {
+                urlBuilder.addPathSegment("manga")
+                urlBuilder.addPathSegment("fytrrpsd7m")
+                urlBuilder.addPathSegment("mago-infinito")
+                urlBuilder.addPathSegment("")
+                return GET(urlBuilder.build(), headers)
+            }
+
             urlBuilder.addPathSegment("search-autocomplete")
             urlBuilder.addQueryParameter("term", query)
 
@@ -86,7 +96,7 @@ abstract class LeerCapitulo : HttpSource() {
 
     override fun searchMangaParse(response: Response): MangasPage {
         if (response.request.url.pathSegments.contains("search-autocomplete")) {
-            val mangas = response.parseAs<List<Dto>>().map { it.toSManga() }
+            val mangas = runCatching { response.parseAs<List<Dto>>().map { it.toSManga() } }.getOrDefault(emptyList())
             return MangasPage(mangas, hasNextPage = false)
         }
 
