@@ -13,7 +13,6 @@ import keiyoushi.utils.asJsoup
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
 @Source
@@ -116,12 +115,11 @@ abstract class LeerCapituloWeb : HttpSource() {
         throw Exception("No se encontraron páginas en este capítulo")
     }
 
-    private fun parseImages(document: org.jsoup.nodes.Document): List<String> =
-        document.select(
-            "#lcPages img, main.lc-pages img, .lc-pages img, .comic_wraCon img, .reading-content img, main img, #chapter-content img, .chapter-content img",
-        ).mapNotNull { image ->
-            image.imgAttr().takeIf { it.isNotBlank() && !it.startsWith("data:") }
-        }.distinct()
+    private fun parseImages(document: org.jsoup.nodes.Document): List<String> = document.select(
+        "#lcPages img, main.lc-pages img, .lc-pages img, .comic_wraCon img, .reading-content img, main img, #chapter-content img, .chapter-content img",
+    ).mapNotNull { image ->
+        image.imgAttr().takeIf { it.isNotBlank() && !it.startsWith("data:") }
+    }.distinct()
 
     private fun Element.imgAttr(): String = when {
         hasAttr("data-src") -> attr("abs:data-src")
