@@ -10,13 +10,11 @@ import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import keiyoushi.annotation.Source
 import keiyoushi.utils.asJsoup
-import keiyoushi.utils.runWebViewBlocking
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
-import kotlin.time.Duration.Companion.seconds
 
 @Source
 abstract class LeerCapituloWeb : HttpSource() {
@@ -107,39 +105,20 @@ abstract class LeerCapituloWeb : HttpSource() {
         .orEmpty()
 
     override fun pageListParse(response: Response): List<Page> {
-        val chapterUrl = response.request.url.toString()
+        val document = response.asJsoup()
 
-        // First try the normal HTTP response. This avoids WebView completely
-        // when the chapter already contains the page images in its HTML.
-        val directImages = response.peekBody(4L * 1024L * 1024L).use { body ->
-            parseImages(Jsoup.parse(body.string(), chapterUrl))
-        }
-        if (directImages.isNotEmpty()) {
-            return directImages.mapIndexed { index, url -> Page(index, imageUrl = url) }
+        // El nuevo visor de LeerCapitulo coloca las páginas directamente en el HTML.
+        val pages = parseImages(document)
+        if (pages.isNotEmpty()) {
+            return pages.mapIndexed { index, url -> Page(index, imageUrl = url) }
         }
 
-        // LeerCapitulo may build the reader with JavaScript. The old implementation
-        // waited for a second reload and for an image counter, which could leave
-        // runWebViewBlocking waiting until its one-minute timeout. Resolve as soon
-        // as the WebView finishes and parse both normal and lazy image attributes.
-        val html = runWebViewBlocking<String>(network.client.newCall(response.request), timeout = 45.seconds) {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            onPageFinished {
-                evaluateJs("document.documentElement.outerHTML") { pageHtml ->
-                    resolve(pageHtml)
-                }
-            }
-            loadUrl(chapterUrl)
-        }
-
-        val images = parseImages(Jsoup.parse(html, chapterUrl))
-        return images.mapIndexed { index, url -> Page(index, imageUrl = url) }
+        throw Exception("No se encontraron páginas en este capítulo")
     }
 
     private fun parseImages(document: org.jsoup.nodes.Document): List<String> =
         document.select(
-            "#lcPages img, .lc-pages img, .comic_wraCon img, .reading-content img",
+            "#lcPages img, main.lc-pages img, .lc-pages img, .comic_wraCon img, .reading-content img, main img, #chapter-content img, .chapter-content img",
         ).mapNotNull { image ->
             image.imgAttr().takeIf { it.isNotBlank() && !it.startsWith("data:") }
         }.distinct()
