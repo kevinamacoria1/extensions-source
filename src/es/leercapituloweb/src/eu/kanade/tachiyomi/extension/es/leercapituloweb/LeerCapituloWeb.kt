@@ -14,8 +14,8 @@ import keiyoushi.utils.runWebViewBlocking
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 @Source
@@ -44,19 +44,13 @@ abstract class LeerCapituloWeb : HttpSource() {
 
     private fun parseMangaList(response: Response): MangasPage {
         val document = response.asJsoup()
-
-        // Nuevo diseño de LeerCapitulo: cada resultado está dentro de article.lc-card.
         val mangas = document.select("article.lc-card").mapNotNull { card ->
             val nameLink = card.selectFirst("a.lc-card-name")
             val coverLink = card.selectFirst("a.lc-card-cover")
             val link = nameLink ?: coverLink ?: return@mapNotNull null
-
-            val url = link.attr("abs:href").takeIf { it.isNotBlank() }
-                ?: return@mapNotNull null
-            val title = nameLink?.text()?.trim()
-                ?: link.text().trim()
+            val url = link.attr("abs:href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val title = nameLink?.text()?.trim() ?: link.text().trim()
             if (title.isBlank()) return@mapNotNull null
-
             SManga.create().apply {
                 setUrlWithoutDomain(url)
                 this.title = title
@@ -64,10 +58,7 @@ abstract class LeerCapituloWeb : HttpSource() {
             }
         }.distinctBy { it.url }
 
-        val hasNextPage = document.selectFirst(
-            "ul.pagination li.active + li:not(.disabled) a",
-        ) != null
-
+        val hasNextPage = document.selectFirst("ul.pagination li.active + li:not(.disabled) a") != null
         return MangasPage(mangas, hasNextPage)
     }
 
@@ -99,12 +90,10 @@ abstract class LeerCapituloWeb : HttpSource() {
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
         return document.select("#chapterList a.lc-chapter-row").mapNotNull { link ->
-            val href = link.attr("abs:href").takeIf { it.isNotBlank() }
-                ?: return@mapNotNull null
+            val href = link.attr("abs:href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
             val name = link.selectFirst("span.n")?.text()?.trim()
                 ?: link.text().trim().takeIf { it.isNotBlank() }
                 ?: return@mapNotNull null
-
             SChapter.create().apply {
                 setUrlWithoutDomain(href)
                 this.name = name
@@ -113,49 +102,47 @@ abstract class LeerCapituloWeb : HttpSource() {
     }
 
     override fun imageUrlParse(response: Response): String = response.asJsoup()
-        .selectFirst("#lcPages img, .lc-pages img, .comic_wraCon img, img")
+        .selectFirst("#lcPages img, .lc-pages img, .comic_wraCon img, .reading-content img, img")
         ?.imgAttr()
         .orEmpty()
 
     override fun pageListParse(response: Response): List<Page> {
         val chapterUrl = response.request.url.toString()
-        val call = network.client.newCall(response.request)
 
-        val html = runWebViewBlocking<String>(call, timeout = 60.seconds) {
+        // First try the normal HTTP response. This avoids WebView completely
+        // when the chapter already contains the page images in its HTML.
+        val directImages = response.peekBody(4L * 1024L * 1024L).use { body ->
+            parseImages(Jsoup.parse(body.string(), chapterUrl))
+        }
+        if (directImages.isNotEmpty()) {
+            return directImages.mapIndexed { index, url -> Page(index, imageUrl = url) }
+        }
+
+        // LeerCapitulo may build the reader with JavaScript. The old implementation
+        // waited for a second reload and for an image counter, which could leave
+        // runWebViewBlocking waiting until its one-minute timeout. Resolve as soon
+        // as the WebView finishes and parse both normal and lazy image attributes.
+        val html = runWebViewBlocking<String>(network.client.newCall(response.request), timeout = 45.seconds) {
             javaScriptEnabled = true
             domStorageEnabled = true
-            var reloaded = false
-
             onPageFinished {
-                if (!reloaded) {
-                    reloaded = true
-                    evaluateJs("localStorage.setItem('display_mode','1'); location.reload();")
-                } else {
-                    poll(500.milliseconds) {
-                        evaluateJs(
-                            "document.querySelectorAll('#lcPages img, .comic_wraCon img').length.toString()",
-                        ) { count ->
-                            if ((count.toIntOrNull() ?: 0) > 0) {
-                                evaluateJs("document.documentElement.outerHTML") { pageHtml ->
-                                    resolve(pageHtml)
-                                }
-                            }
-                        }
-                    }
+                evaluateJs("document.documentElement.outerHTML") { pageHtml ->
+                    resolve(pageHtml)
                 }
             }
             loadUrl(chapterUrl)
         }
 
-        val document = org.jsoup.Jsoup.parse(html, chapterUrl)
-        val images = document.select(
-            "#lcPages img, .lc-pages img, .comic_wraCon img, .reading-content img, img",
+        val images = parseImages(Jsoup.parse(html, chapterUrl))
+        return images.mapIndexed { index, url -> Page(index, imageUrl = url) }
+    }
+
+    private fun parseImages(document: org.jsoup.nodes.Document): List<String> =
+        document.select(
+            "#lcPages img, .lc-pages img, .comic_wraCon img, .reading-content img",
         ).mapNotNull { image ->
             image.imgAttr().takeIf { it.isNotBlank() && !it.startsWith("data:") }
         }.distinct()
-
-        return images.mapIndexed { index, url -> Page(index, imageUrl = url) }
-    }
 
     private fun Element.imgAttr(): String = when {
         hasAttr("data-src") -> attr("abs:data-src")
